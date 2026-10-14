@@ -15,6 +15,7 @@ import com.nexawallet.platform.modules.ledger.entity.LedgerAccountEntity;
 import com.nexawallet.platform.modules.ledger.entity.LedgerEntryEntity;
 import com.nexawallet.platform.modules.ledger.repository.LedgerAccountRepository;
 import com.nexawallet.platform.modules.ledger.repository.LedgerEntryRepository;
+import com.nexawallet.platform.modules.outbox.service.OutboxEventWriter;
 import com.nexawallet.platform.modules.transfer.entity.IdempotencyKeyEntity;
 import com.nexawallet.platform.modules.transfer.entity.IdempotencyStatus;
 import com.nexawallet.platform.modules.transfer.entity.TransactionEntity;
@@ -37,7 +38,9 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -74,6 +77,7 @@ public class TransferServiceImpl implements TransferService {
     private final IdempotencyKeyRepository idempotencyKeyRepository;
     private final UserRepository userRepository;
     private final WalletServiceImpl walletServiceImpl;
+    private final OutboxEventWriter outboxEventWriter;
 
     public TransferServiceImpl(
             WalletRepository walletRepository,
@@ -82,7 +86,8 @@ public class TransferServiceImpl implements TransferService {
             TransactionRepository transactionRepository,
             IdempotencyKeyRepository idempotencyKeyRepository,
             UserRepository userRepository,
-            WalletServiceImpl walletServiceImpl
+            WalletServiceImpl walletServiceImpl,
+            OutboxEventWriter outboxEventWriter
     ) {
         this.walletRepository = walletRepository;
         this.ledgerAccountRepository = ledgerAccountRepository;
@@ -91,6 +96,7 @@ public class TransferServiceImpl implements TransferService {
         this.idempotencyKeyRepository = idempotencyKeyRepository;
         this.userRepository = userRepository;
         this.walletServiceImpl = walletServiceImpl;
+        this.outboxEventWriter = outboxEventWriter;
     }
 
     @Override
@@ -249,6 +255,20 @@ public class TransferServiceImpl implements TransferService {
         // ── Step 8: Mark transaction SETTLED ─────────────────────────────
         transaction.setStatus(TransactionStatus.SETTLED);
         TransactionEntity settled = transactionRepository.save(transaction);
+
+        // ── Outbox: record the domain event in this same DB transaction ──
+        // If anything above rolls back, this row rolls back with it — Kafka is
+        // never touched here, so a broker outage cannot affect a committed transfer.
+        Map<String, Object> eventData = new LinkedHashMap<>();
+        eventData.put("transactionId", settled.getId());
+        eventData.put("referenceCode", settled.getReferenceCode());
+        eventData.put("sourceWalletNumber", senderWallet.getWalletNumber());
+        eventData.put("targetWalletNumber", targetWallet.getWalletNumber());
+        eventData.put("amount", amount);
+        eventData.put("currency", settled.getCurrency());
+        eventData.put("status", settled.getStatus().name());
+        eventData.put("type", settled.getType().name());
+        outboxEventWriter.record("Transaction", settled.getId(), "P2P_TRANSFER_SETTLED", eventData);
 
         log.info("P2P transfer of {} USD settled: {} → {}. Ref: {}",
                 amount,

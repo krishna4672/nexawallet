@@ -1,7 +1,9 @@
 package com.nexawallet.platform.common.config;
 
+import com.nexawallet.platform.common.ratelimit.RateLimitFilter;
 import com.nexawallet.platform.common.security.JwtAuthenticationFilter;
 import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -34,11 +36,28 @@ import java.time.ZoneOffset;
 public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
+    private final RateLimitFilter rateLimitFilter;
     private final UserDetailsService userDetailsService;
 
-    public SecurityConfig(JwtAuthenticationFilter jwtAuthenticationFilter, UserDetailsService userDetailsService) {
+    public SecurityConfig(JwtAuthenticationFilter jwtAuthenticationFilter, RateLimitFilter rateLimitFilter, UserDetailsService userDetailsService) {
         this.jwtAuthenticationFilter = jwtAuthenticationFilter;
+        this.rateLimitFilter = rateLimitFilter;
         this.userDetailsService = userDetailsService;
+    }
+
+    /**
+     * {@link RateLimitFilter} is a {@code @Component} so it can be constructor-injected here, but
+     * that also makes Spring Boot auto-register it as a second, independent servlet-container
+     * filter mapped to every URL — which would run it twice per request (once standalone, once
+     * inside the Spring Security chain below) and silently double-consume rate-limit quota. This
+     * bean disables that automatic registration; the chain wiring in {@link #securityFilterChain}
+     * is the only place it actually runs.
+     */
+    @Bean
+    public FilterRegistrationBean<RateLimitFilter> disableRateLimitFilterAutoRegistration(RateLimitFilter rateLimitFilter) {
+        FilterRegistrationBean<RateLimitFilter> registration = new FilterRegistrationBean<>(rateLimitFilter);
+        registration.setEnabled(false);
+        return registration;
     }
 
     @Bean
@@ -67,6 +86,7 @@ public class SecurityConfig {
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authenticationProvider(authenticationProvider())
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
+                .addFilterAfter(rateLimitFilter, JwtAuthenticationFilter.class)
                 .exceptionHandling(ex -> ex
                         .authenticationEntryPoint((request, response, authException) -> {
                             response.setContentType(MediaType.APPLICATION_JSON_VALUE);
@@ -97,7 +117,9 @@ public class SecurityConfig {
                         .requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
                         // Explicit Public Authentication Endpoints
                         .requestMatchers(HttpMethod.POST, "/api/v1/auth/register", "/api/v1/auth/login").permitAll()
-                        // All other endpoints (including /api/v1/auth/me) require valid JWT authentication
+                        // Public read-only location discovery (no financial data, no JWT required — like any "find a nearby ATM" feature)
+                        .requestMatchers(HttpMethod.GET, "/api/v1/service-points/nearby").permitAll()
+                        // All other endpoints (including /api/v1/auth/me and every /api/v1/admin/** write) require valid JWT authentication
                         .anyRequest().authenticated()
                 );
 

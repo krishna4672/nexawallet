@@ -22,7 +22,7 @@ import java.util.UUID;
 /**
  * JPA Entity representing a transactional outbox event.
  * Persisted in the same ACID database transaction as the financial ledger,
- * guaranteeing zero message loss and eventual consistency with Kafka.
+ * guaranteeing zero message loss and eventual (at-least-once) consistency with Kafka.
  */
 @Entity
 @Table(name = "outbox_events")
@@ -58,6 +58,12 @@ public class OutboxEventEntity {
     @Column(name = "retry_count", nullable = false)
     @Builder.Default
     private int retryCount = 0;
+
+    @Column(name = "next_retry_at")
+    private OffsetDateTime nextRetryAt;
+
+    @Column(name = "last_error", length = 500)
+    private String lastError;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private OffsetDateTime createdAt;

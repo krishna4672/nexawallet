@@ -157,6 +157,22 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY).body(error);
     }
 
+    @ExceptionHandler(com.nexawallet.platform.modules.discovery.exception.SearchUnavailableException.class)
+    public ResponseEntity<ApiErrorResponse> handleSearchUnavailable(
+            com.nexawallet.platform.modules.discovery.exception.SearchUnavailableException ex,
+            HttpServletRequest request
+    ) {
+        log.error("Search backend unavailable for request path {}: {}", request.getRequestURI(), ex.getCause() != null ? ex.getCause().getClass().getSimpleName() : ex.getMessage());
+        ApiErrorResponse error = ApiErrorResponse.builder()
+                .timestamp(OffsetDateTime.now(ZoneOffset.UTC))
+                .status(HttpStatus.SERVICE_UNAVAILABLE.value())
+                .error(HttpStatus.SERVICE_UNAVAILABLE.getReasonPhrase())
+                .message("Search is temporarily unavailable. Please retry shortly.")
+                .path(request.getRequestURI())
+                .build();
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(error);
+    }
+
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<ApiErrorResponse> handleIllegalArgument(
             IllegalArgumentException ex,

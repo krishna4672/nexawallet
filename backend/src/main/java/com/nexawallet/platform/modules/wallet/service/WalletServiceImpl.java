@@ -8,6 +8,7 @@ import com.nexawallet.platform.modules.ledger.entity.LedgerAccountEntity;
 import com.nexawallet.platform.modules.ledger.entity.LedgerAccountType;
 import com.nexawallet.platform.modules.ledger.repository.LedgerAccountRepository;
 import com.nexawallet.platform.modules.ledger.repository.LedgerEntryRepository;
+import com.nexawallet.platform.modules.outbox.service.OutboxEventWriter;
 import com.nexawallet.platform.modules.transfer.entity.TransactionEntity;
 import com.nexawallet.platform.modules.transfer.entity.TransactionStatus;
 import com.nexawallet.platform.modules.transfer.entity.TransactionType;
@@ -27,7 +28,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -47,17 +50,20 @@ public class WalletServiceImpl implements WalletService {
     private final LedgerAccountRepository ledgerAccountRepository;
     private final LedgerEntryRepository ledgerEntryRepository;
     private final TransactionRepository transactionRepository;
+    private final OutboxEventWriter outboxEventWriter;
 
     public WalletServiceImpl(
             WalletRepository walletRepository,
             LedgerAccountRepository ledgerAccountRepository,
             LedgerEntryRepository ledgerEntryRepository,
-            TransactionRepository transactionRepository
+            TransactionRepository transactionRepository,
+            OutboxEventWriter outboxEventWriter
     ) {
         this.walletRepository = walletRepository;
         this.ledgerAccountRepository = ledgerAccountRepository;
         this.ledgerEntryRepository = ledgerEntryRepository;
         this.transactionRepository = transactionRepository;
+        this.outboxEventWriter = outboxEventWriter;
     }
 
     @Override
@@ -136,6 +142,18 @@ public class WalletServiceImpl implements WalletService {
         // 8. Mark transaction SETTLED
         transaction.setStatus(TransactionStatus.SETTLED);
         TransactionEntity settled = transactionRepository.save(transaction);
+
+        // 9. Outbox: record the domain event in this same DB transaction (see TransferServiceImpl
+        //    for why the Kafka publish itself never happens inline here).
+        Map<String, Object> eventData = new LinkedHashMap<>();
+        eventData.put("transactionId", settled.getId());
+        eventData.put("referenceCode", settled.getReferenceCode());
+        eventData.put("targetWalletNumber", lockedWallet.getWalletNumber());
+        eventData.put("amount", amount);
+        eventData.put("currency", settled.getCurrency());
+        eventData.put("status", settled.getStatus().name());
+        eventData.put("type", settled.getType().name());
+        outboxEventWriter.record("Transaction", settled.getId(), "DEPOSIT_SETTLED", eventData);
 
         log.info("Simulated deposit of {} USD settled for wallet {}. New balance: {}",
                 amount, lockedWallet.getWalletNumber(), lockedWallet.getBalance());

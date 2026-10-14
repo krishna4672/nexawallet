@@ -1,5 +1,7 @@
 package com.nexawallet.platform.modules.auth.service;
 
+import com.nexawallet.platform.common.cache.UserProfileCacheEntry;
+import com.nexawallet.platform.common.cache.UserProfileCacheService;
 import com.nexawallet.platform.common.exception.ResourceNotFoundException;
 import com.nexawallet.platform.common.exception.UserAlreadyExistsException;
 import com.nexawallet.platform.common.security.JwtTokenProvider;
@@ -47,6 +49,7 @@ public class AuthServiceImpl implements AuthService {
     private final PasswordEncoder passwordEncoder;
     private final AuthenticationManager authenticationManager;
     private final JwtTokenProvider jwtTokenProvider;
+    private final UserProfileCacheService userProfileCacheService;
 
     public AuthServiceImpl(
             UserRepository userRepository,
@@ -54,7 +57,8 @@ public class AuthServiceImpl implements AuthService {
             LedgerAccountRepository ledgerAccountRepository,
             PasswordEncoder passwordEncoder,
             AuthenticationManager authenticationManager,
-            JwtTokenProvider jwtTokenProvider
+            JwtTokenProvider jwtTokenProvider,
+            UserProfileCacheService userProfileCacheService
     ) {
         this.userRepository = userRepository;
         this.walletRepository = walletRepository;
@@ -62,6 +66,7 @@ public class AuthServiceImpl implements AuthService {
         this.passwordEncoder = passwordEncoder;
         this.authenticationManager = authenticationManager;
         this.jwtTokenProvider = jwtTokenProvider;
+        this.userProfileCacheService = userProfileCacheService;
     }
 
     @Override
@@ -117,7 +122,14 @@ public class AuthServiceImpl implements AuthService {
                 savedUser.getRole().name()
         );
 
-        UserResponse userResponse = buildUserResponse(savedUser, savedWallet);
+        // Seed the identity-fields cache now, while we already have a freshly-loaded entity in
+        // hand — a cheap write that means the very next GET /api/v1/auth/me is a cache hit, and
+        // that any previously-cached (now impossible, since this id is brand new) entry can never
+        // be stale.
+        UserProfileCacheEntry profile = toProfile(savedUser);
+        userProfileCacheService.put(savedUser.getId(), profile);
+
+        UserResponse userResponse = buildUserResponse(profile, savedWallet);
 
         return AuthResponse.builder()
                 .accessToken(accessToken)
@@ -158,7 +170,13 @@ public class AuthServiceImpl implements AuthService {
 
         log.info("Customer '{}' successfully logged in", normalizedEmail);
 
-        UserResponse userResponse = buildUserResponse(user, primaryWallet);
+        // Refresh the cache on every successful login — this is the main invalidation mechanism
+        // for the (currently immutable, no update-profile endpoint exists yet) identity fields:
+        // a login always overwrites whatever was cached with a value just read from Postgres.
+        UserProfileCacheEntry profile = toProfile(user);
+        userProfileCacheService.put(user.getId(), profile);
+
+        UserResponse userResponse = buildUserResponse(profile, primaryWallet);
 
         return AuthResponse.builder()
                 .accessToken(accessToken)
@@ -171,10 +189,14 @@ public class AuthServiceImpl implements AuthService {
     @Override
     @Transactional(readOnly = true)
     public UserResponse getCurrentUser(UUID userId) {
-        UserEntity user = userRepository.findById(userId)
-                .orElseThrow(() -> new ResourceNotFoundException("User", userId));
-        WalletEntity primaryWallet = findPrimaryWallet(user.getId());
-        return buildUserResponse(user, primaryWallet);
+        // Read-through cache for the identity fields only. The wallet balance below is always a
+        // fresh PostgreSQL read — a cache hit here can never serve a stale balance, because the
+        // balance was never part of what got cached in the first place.
+        UserProfileCacheEntry profile = userProfileCacheService.getOrLoad(userId, () -> toProfile(
+                userRepository.findById(userId).orElseThrow(() -> new ResourceNotFoundException("User", userId))
+        ));
+        WalletEntity primaryWallet = findPrimaryWallet(userId);
+        return buildUserResponse(profile, primaryWallet);
     }
 
     private WalletEntity findPrimaryWallet(UUID userId) {
@@ -182,16 +204,27 @@ public class AuthServiceImpl implements AuthService {
         return wallets.isEmpty() ? null : wallets.get(0);
     }
 
-    private UserResponse buildUserResponse(UserEntity user, WalletEntity wallet) {
+    private UserResponse buildUserResponse(UserProfileCacheEntry profile, WalletEntity wallet) {
         return UserResponse.builder()
+                .id(profile.getId())
+                .email(profile.getEmail())
+                .firstName(profile.getFirstName())
+                .lastName(profile.getLastName())
+                .role(profile.getRole())
+                .walletNumber(wallet != null ? wallet.getWalletNumber() : null)
+                .walletBalance(wallet != null ? wallet.getBalance() : BigDecimal.ZERO.setScale(4))
+                .currency(wallet != null ? wallet.getCurrency() : "USD")
+                .createdAt(profile.getCreatedAt())
+                .build();
+    }
+
+    private UserProfileCacheEntry toProfile(UserEntity user) {
+        return UserProfileCacheEntry.builder()
                 .id(user.getId())
                 .email(user.getEmail())
                 .firstName(user.getFirstName())
                 .lastName(user.getLastName())
                 .role(user.getRole().name())
-                .walletNumber(wallet != null ? wallet.getWalletNumber() : null)
-                .walletBalance(wallet != null ? wallet.getBalance() : BigDecimal.ZERO.setScale(4))
-                .currency(wallet != null ? wallet.getCurrency() : "USD")
                 .createdAt(user.getCreatedAt())
                 .build();
     }

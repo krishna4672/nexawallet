@@ -23,11 +23,15 @@ export const Sidebar: React.FC<SidebarProps> = ({ onClose }) => {
 
   const navigation = [
     { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
-    { name: 'Transfers', href: '/dashboard#transfers', icon: ArrowLeftRight, badge: 'Phase 3' },
-    { name: 'Transactions', href: '/dashboard#transactions', icon: History, badge: 'Phase 6' },
-    { name: 'Discovery', href: '/dashboard#discovery', icon: Compass, badge: 'Geohash' },
-    { name: 'Ledger Audit', href: '/dashboard#audit', icon: ShieldAlert, badge: 'Admin' },
-    { name: 'Settings', href: '/dashboard#settings', icon: Settings },
+    { name: 'Transfers', href: '/dashboard#wallet', icon: ArrowLeftRight },
+    { name: 'Transactions', href: '/dashboard#activity', icon: History },
+    { name: 'Discovery', href: '/dashboard#discovery', icon: Compass },
+  ];
+
+  // Not yet implemented — shown as disabled rather than as a dead or misleading link.
+  const comingSoon = [
+    { name: 'Ledger Audit', icon: ShieldAlert },
+    { name: 'Settings', icon: Settings },
   ];
 
   return (
@@ -77,12 +81,27 @@ export const Sidebar: React.FC<SidebarProps> = ({ onClose }) => {
                 <Icon className={`w-4 h-4 ${isActive ? 'text-nexa-teal-400' : 'text-slate-400'}`} />
                 <span>{item.name}</span>
               </div>
-              {item.badge && (
-                <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-nexa-navy-800 text-slate-300 border border-nexa-navy-700">
-                  {item.badge}
-                </span>
-              )}
             </Link>
+          );
+        })}
+
+        {comingSoon.map((item) => {
+          const Icon = item.icon;
+          return (
+            <div
+              key={item.name}
+              aria-disabled="true"
+              title="Not available yet"
+              className="flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-medium text-slate-500 cursor-not-allowed select-none"
+            >
+              <div className="flex items-center space-x-3">
+                <Icon className="w-4 h-4 text-slate-600" />
+                <span>{item.name}</span>
+              </div>
+              <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-nexa-navy-800/60 text-slate-500 border border-nexa-navy-800">
+                Coming soon
+              </span>
+            </div>
           );
         })}
       </div>

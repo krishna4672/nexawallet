@@ -37,13 +37,17 @@ services:
     image: redis:7-alpine
     container_name: nexa-redis
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
+    # Phase 5: read-through cache (user profile) + distributed sliding-window rate limiter state.
+    # --requirepass "" (the default when REDIS_PASSWORD is unset) disables password auth, matching
+    # local dev; set REDIS_PASSWORD in .env to require one. Not exposed publicly by default — the
+    # published port binds to the host's own interfaces only, same as the other local-dev services.
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:-}"]
     ports:
       - "${REDIS_PORT:-6379}:6379"
     volumes:
       - nexa_redisdata:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "${REDIS_PASSWORD:-}", "ping"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -91,9 +95,12 @@ services:
       - nexa-network
 
   # ----------------------------------------------------------------------------
-  # Elasticsearch 8.11.1 - Transaction Full-Text Search & Audit Analytics
+  # Elasticsearch 8.11.1 - Phase 6 Service-Point Geo Search (derived index; PostgreSQL is
+  # authoritative — see README). Single-node, local development only: no replica shards, no HA.
   # WARNING: Security is disabled below for local development convenience ONLY.
   # Do NOT deploy to production without TLS certificates and user authentication.
+  # The published port binds to the host's own interfaces only (same as every other service in
+  # this file) — it is not exposed publicly by this compose file.
   # ----------------------------------------------------------------------------
   nexa-elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1

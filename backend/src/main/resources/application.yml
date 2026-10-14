@@ -34,6 +34,43 @@ spring:
     baseline-version: 0
     locations: classpath:db/migration
 
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+      retries: 5
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 5
+        linger.ms: 5
+        delivery.timeout.ms: 30000
+    consumer:
+      group-id: nexawallet-transaction-indexer
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+    admin:
+      fail-fast: false
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: ${REDIS_COMMAND_TIMEOUT_MS:2000}
+      connect-timeout: ${REDIS_CONNECT_TIMEOUT_MS:2000}
+      client-type: lettuce
+
+  elasticsearch:
+    uris: ${ELASTICSEARCH_SCHEME:http}://${ELASTICSEARCH_HOST:localhost}:${ELASTICSEARCH_PORT:9200}
+    username: ${ELASTICSEARCH_USERNAME:}
+    password: ${ELASTICSEARCH_PASSWORD:}
+    connection-timeout: ${ELASTICSEARCH_CONNECT_TIMEOUT_MS:2000}
+    socket-timeout: ${ELASTICSEARCH_SOCKET_TIMEOUT_MS:5000}
+
 server:
   port: ${SERVER_PORT:8080}
   servlet:
@@ -71,3 +108,69 @@ nexa:
       secret: ${JWT_SECRET:404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970}
       expiration-ms: ${JWT_EXPIRATION_MS:900000}
       refresh-expiration-ms: ${JWT_REFRESH_EXPIRATION_MS:604800000}
+
+  # Phase 4: Transactional Outbox & Kafka Event-Driven Architecture
+  kafka:
+    topic-partitions: ${KAFKA_TOPIC_PARTITIONS:3}
+    topic-replicas: ${KAFKA_TOPIC_REPLICAS:1}
+    consumer:
+      auto-startup: ${KAFKA_CONSUMER_AUTO_STARTUP:true}
+      max-retries: ${KAFKA_CONSUMER_MAX_RETRIES:5}
+      retry-backoff-ms: ${KAFKA_CONSUMER_RETRY_BACKOFF_MS:500}
+  outbox:
+    publisher:
+      enabled: ${OUTBOX_PUBLISHER_ENABLED:true}
+      batch-size: ${OUTBOX_BATCH_SIZE:50}
+      poll-interval-ms: ${OUTBOX_POLL_INTERVAL_MS:2000}
+      send-timeout-ms: ${OUTBOX_SEND_TIMEOUT_MS:10000}
+      max-retries: ${OUTBOX_MAX_RETRIES:8}
+      base-backoff-ms: ${OUTBOX_BASE_BACKOFF_MS:1000}
+      max-backoff-ms: ${OUTBOX_MAX_BACKOFF_MS:60000}
+
+  # Phase 5: Redis Caching & Distributed Rate Limiting
+  cache:
+    user-profile:
+      ttl-seconds: ${CACHE_USER_PROFILE_TTL_SECONDS:600}
+
+  ratelimit:
+    enabled: ${RATE_LIMIT_ENABLED:true}
+    # CLOSED (default): a Redis outage rejects the request with 503 rather than letting it through
+    # unlimited. OPEN is available for environments that explicitly accept that trade-off — see README.
+    fail-policy: ${RATE_LIMIT_FAIL_POLICY:CLOSED}
+    # Comma-separated trusted reverse-proxy IPs/CIDRs allowed to set X-Forwarded-For. Empty (default)
+    # means the raw socket address is always used — the header is never trusted from the public internet.
+    trusted-proxies: ${RATE_LIMIT_TRUSTED_PROXIES:}
+    identifier-hmac-secret: ${RATE_LIMIT_HMAC_SECRET:change-me-rate-limit-hmac-secret-dev-only-0123456789abcdef}
+    login-ip:
+      limit: ${RATE_LIMIT_LOGIN_IP_LIMIT:10}
+      window-seconds: ${RATE_LIMIT_LOGIN_IP_WINDOW_SECONDS:60}
+    login-identifier:
+      limit: ${RATE_LIMIT_LOGIN_ID_LIMIT:5}
+      window-seconds: ${RATE_LIMIT_LOGIN_ID_WINDOW_SECONDS:60}
+    register-ip:
+      limit: ${RATE_LIMIT_REGISTER_IP_LIMIT:5}
+      window-seconds: ${RATE_LIMIT_REGISTER_IP_WINDOW_SECONDS:3600}
+    transfer-user:
+      limit: ${RATE_LIMIT_TRANSFER_USER_LIMIT:20}
+      window-seconds: ${RATE_LIMIT_TRANSFER_USER_WINDOW_SECONDS:60}
+    transfer-ip:
+      limit: ${RATE_LIMIT_TRANSFER_IP_LIMIT:60}
+      window-seconds: ${RATE_LIMIT_TRANSFER_IP_WINDOW_SECONDS:60}
+    deposit-user:
+      limit: ${RATE_LIMIT_DEPOSIT_USER_LIMIT:20}
+      window-seconds: ${RATE_LIMIT_DEPOSIT_USER_WINDOW_SECONDS:60}
+    deposit-ip:
+      limit: ${RATE_LIMIT_DEPOSIT_IP_LIMIT:60}
+      window-seconds: ${RATE_LIMIT_DEPOSIT_IP_WINDOW_SECONDS:60}
+
+  # Phase 6: Elasticsearch Search & Geohash-Based Location Discovery
+  elasticsearch:
+    index:
+      service-points: ${ELASTICSEARCH_SERVICE_POINTS_INDEX:service_points_v1}
+  discovery:
+    max-radius-meters: ${DISCOVERY_MAX_RADIUS_METERS:50000}
+    default-radius-meters: ${DISCOVERY_DEFAULT_RADIUS_METERS:2000}
+    max-page-size: ${DISCOVERY_MAX_PAGE_SIZE:100}
+    default-page-size: ${DISCOVERY_DEFAULT_PAGE_SIZE:20}
+    service-points-index: ${ELASTICSEARCH_SERVICE_POINTS_INDEX:service_points_v1}
+    reindex-batch-size: ${DISCOVERY_REINDEX_BATCH_SIZE:200}

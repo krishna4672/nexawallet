@@ -42,6 +42,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [token]);
 
+  // Session-expiry handling: a 401 from any authenticated call (expired/invalid JWT) clears the
+  // in-memory session the same way an explicit logout does. ProtectedRoute reacts to isAuthenticated
+  // becoming false and redirects to /login on its own next render — no manual navigation needed here.
+  useEffect(() => {
+    const interceptorId = apiClient.interceptors.response.use(
+      (response) => response,
+      (error) => {
+        if (error?.response?.status === 401) {
+          setToken(null);
+          setUser(null);
+          delete apiClient.defaults.headers.common['Authorization'];
+        }
+        return Promise.reject(error);
+      }
+    );
+
+    return () => {
+      apiClient.interceptors.response.eject(interceptorId);
+    };
+  }, []);
+
   const login = (data: AuthResponseData) => {
     setToken(data.accessToken);
     setUser(data.user);

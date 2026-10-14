@@ -5,6 +5,9 @@ import com.nexawallet.platform.modules.auth.dto.RegisterRequest;
 import com.nexawallet.platform.modules.auth.repository.UserRepository;
 import com.nexawallet.platform.modules.ledger.repository.LedgerAccountRepository;
 import com.nexawallet.platform.modules.ledger.repository.LedgerEntryRepository;
+import com.nexawallet.platform.modules.outbox.entity.OutboxEventEntity;
+import com.nexawallet.platform.modules.outbox.entity.OutboxStatus;
+import com.nexawallet.platform.modules.outbox.repository.OutboxEventRepository;
 import com.nexawallet.platform.modules.transfer.repository.IdempotencyKeyRepository;
 import com.nexawallet.platform.modules.transfer.repository.TransactionRepository;
 import com.nexawallet.platform.modules.wallet.dto.DepositRequest;
@@ -22,8 +25,10 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
 import java.math.BigDecimal;
+import java.util.List;
 import java.util.UUID;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -50,10 +55,12 @@ class WalletTransferIntegrationTest {
     @Autowired private LedgerEntryRepository ledgerEntryRepository;
     @Autowired private TransactionRepository transactionRepository;
     @Autowired private IdempotencyKeyRepository idempotencyKeyRepository;
+    @Autowired private OutboxEventRepository outboxEventRepository;
 
     @BeforeEach
     void cleanUp() {
         // Clean in FK dependency order
+        outboxEventRepository.deleteAll();
         idempotencyKeyRepository.deleteAll();
         ledgerEntryRepository.deleteAll();
         transactionRepository.deleteAll();
@@ -354,5 +361,84 @@ class WalletTransferIntegrationTest {
                         .header("Authorization", "Bearer " + bobToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.totalElements", is(1)));
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Phase 4: Transactional Outbox
+    // ──────────────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("O1. A successful simulated deposit writes exactly one PENDING outbox event, in the same DB transaction")
+    void deposit_success_writesOutboxEvent() throws Exception {
+        String token = registerAndGetToken("outbox.deposit@example.com", "Outboxer");
+
+        mockMvc.perform(post("/api/v1/wallet/deposit")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new DepositRequest(new BigDecimal("75.00"), "outbox test"))))
+                .andExpect(status().isOk());
+
+        List<OutboxEventEntity> events = outboxEventRepository.findAll();
+        assertThat(events).hasSize(1);
+        assertThat(events.get(0).getEventType()).isEqualTo("DEPOSIT_SETTLED");
+        assertThat(events.get(0).getAggregateType()).isEqualTo("Transaction");
+        assertThat(events.get(0).getStatus()).isEqualTo(OutboxStatus.PENDING);
+        assertThat(events.get(0).getPayload()).contains("\"schemaVersion\":1").contains("DEPOSIT_SETTLED");
+    }
+
+    @Test
+    @DisplayName("O2. A successful P2P transfer writes exactly one PENDING outbox event")
+    void transfer_success_writesOutboxEvent() throws Exception {
+        String aliceToken = registerAndGetToken("outbox.alice@example.com", "Alice");
+        String bobToken   = registerAndGetToken("outbox.bob@example.com", "Bob");
+
+        MvcResult bobWalletResult = mockMvc.perform(get("/api/v1/wallet/me")
+                        .header("Authorization", "Bearer " + bobToken))
+                .andReturn();
+        String bobWalletNumber = objectMapper.readTree(bobWalletResult.getResponse().getContentAsString())
+                .get("walletNumber").asText();
+
+        mockMvc.perform(post("/api/v1/wallet/deposit")
+                        .header("Authorization", "Bearer " + aliceToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new DepositRequest(new BigDecimal("200.00"), "seed"))))
+                .andExpect(status().isOk());
+
+        // Deposit above already created 1 outbox event — clear it so this test isolates the transfer's event.
+        outboxEventRepository.deleteAll();
+
+        mockMvc.perform(post("/api/v1/transfers")
+                        .header("Authorization", "Bearer " + aliceToken)
+                        .header("Idempotency-Key", UUID.randomUUID().toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new TransferRequest(bobWalletNumber, new BigDecimal("40.00"), "outbox transfer test"))))
+                .andExpect(status().isOk());
+
+        List<OutboxEventEntity> events = outboxEventRepository.findAll();
+        assertThat(events).hasSize(1);
+        assertThat(events.get(0).getEventType()).isEqualTo("P2P_TRANSFER_SETTLED");
+        assertThat(events.get(0).getStatus()).isEqualTo(OutboxStatus.PENDING);
+    }
+
+    @Test
+    @DisplayName("O3. A transfer rejected for insufficient balance writes no outbox event (rolls back with everything else)")
+    void transfer_insufficientBalance_writesNoOutboxEvent() throws Exception {
+        String aliceToken = registerAndGetToken("outbox.broke@example.com", "Alice");
+        String bobToken   = registerAndGetToken("outbox.rich@example.com", "Bob");
+
+        MvcResult bobWalletResult = mockMvc.perform(get("/api/v1/wallet/me")
+                        .header("Authorization", "Bearer " + bobToken))
+                .andReturn();
+        String bobWalletNumber = objectMapper.readTree(bobWalletResult.getResponse().getContentAsString())
+                .get("walletNumber").asText();
+
+        mockMvc.perform(post("/api/v1/transfers")
+                        .header("Authorization", "Bearer " + aliceToken)
+                        .header("Idempotency-Key", UUID.randomUUID().toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new TransferRequest(bobWalletNumber, new BigDecimal("500.00"), null))))
+                .andExpect(status().isUnprocessableEntity());
+
+        assertThat(outboxEventRepository.findAll()).isEmpty();
     }
 }

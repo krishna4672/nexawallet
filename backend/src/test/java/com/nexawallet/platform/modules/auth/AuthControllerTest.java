@@ -7,6 +7,10 @@ import com.nexawallet.platform.modules.auth.dto.RegisterRequest;
 import com.nexawallet.platform.modules.auth.entity.UserEntity;
 import com.nexawallet.platform.modules.auth.repository.UserRepository;
 import com.nexawallet.platform.modules.ledger.repository.LedgerAccountRepository;
+import com.nexawallet.platform.modules.ledger.repository.LedgerEntryRepository;
+import com.nexawallet.platform.modules.outbox.repository.OutboxEventRepository;
+import com.nexawallet.platform.modules.transfer.repository.TransactionRepository;
+import com.nexawallet.platform.modules.wallet.dto.DepositRequest;
 import com.nexawallet.platform.modules.wallet.entity.WalletEntity;
 import com.nexawallet.platform.modules.wallet.repository.WalletRepository;
 import io.jsonwebtoken.Jwts;
@@ -23,6 +27,7 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.util.Date;
 import java.util.List;
@@ -63,9 +68,23 @@ class AuthControllerTest {
     @Autowired
     private JwtTokenProvider jwtTokenProvider;
 
+    @Autowired
+    private LedgerEntryRepository ledgerEntryRepository;
+
+    @Autowired
+    private TransactionRepository transactionRepository;
+
+    @Autowired
+    private OutboxEventRepository outboxEventRepository;
+
     @BeforeEach
     void setUp() {
-        // Clear repositories in proper foreign-key dependency order
+        // Clear repositories in proper foreign-key dependency order. Deposits made in the Phase 5
+        // cache-freshness tests below write ledger entries/transactions/outbox rows, so those must
+        // be cleared before ledger_accounts/wallets/users or the next test's cleanup violates FKs.
+        outboxEventRepository.deleteAll();
+        ledgerEntryRepository.deleteAll();
+        transactionRepository.deleteAll();
         ledgerAccountRepository.deleteAll();
         walletRepository.deleteAll();
         userRepository.deleteAll();
@@ -278,6 +297,81 @@ class AuthControllerTest {
                         .header("Authorization", "Bearer " + expiredToken))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.status", is(401)));
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Phase 5: Read-through cache for the /api/v1/auth/me identity fields
+    // ──────────────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("9. Two users' cached /api/v1/auth/me profiles never leak into one another")
+    void cachedProfiles_areIsolatedAcrossUsers() throws Exception {
+        String tokenA = registerAndGetToken("cache.userA@example.com", "Alice", "Anderson");
+        String tokenB = registerAndGetToken("cache.userB@example.com", "Brianna", "Baxter");
+
+        // Warm both caches (first call is a miss-then-populate for each user). Registration
+        // normalizes email to lowercase, so assert against the normalized form.
+        mockMvc.perform(get("/api/v1/auth/me").header("Authorization", "Bearer " + tokenA))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.email", is("cache.usera@example.com")))
+                .andExpect(jsonPath("$.firstName", is("Alice")));
+
+        mockMvc.perform(get("/api/v1/auth/me").header("Authorization", "Bearer " + tokenB))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.email", is("cache.userb@example.com")))
+                .andExpect(jsonPath("$.firstName", is("Brianna")));
+
+        // Repeat (now served from cache) — must still return each user's own data, never the other's
+        mockMvc.perform(get("/api/v1/auth/me").header("Authorization", "Bearer " + tokenA))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.email", is("cache.usera@example.com")))
+                .andExpect(jsonPath("$.firstName", is("Alice")));
+
+        mockMvc.perform(get("/api/v1/auth/me").header("Authorization", "Bearer " + tokenB))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.email", is("cache.userb@example.com")))
+                .andExpect(jsonPath("$.firstName", is("Brianna")));
+    }
+
+    @Test
+    @DisplayName("10. A cached /api/v1/auth/me response never serves a stale wallet balance")
+    void cachedProfile_neverServesStaleBalance() throws Exception {
+        String token = registerAndGetToken("cache.freshbalance@example.com", "Fresh", "Balance");
+
+        // Warm the identity-fields cache with a zero balance
+        mockMvc.perform(get("/api/v1/auth/me").header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.balance").doesNotExist()) // no "balance" field; it's "walletBalance"
+                .andExpect(jsonPath("$.walletBalance", is(0.0)));
+
+        // Deposit funds — this does not touch the identity cache at all
+        mockMvc.perform(post("/api/v1/wallet/deposit")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new DepositRequest(new BigDecimal("42.00"), "cache freshness test"))))
+                .andExpect(status().isOk());
+
+        // The identity portion is very likely still a cache hit, but the balance must be fresh
+        mockMvc.perform(get("/api/v1/auth/me").header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.walletBalance", is(42.0)));
+    }
+
+    private String registerAndGetToken(String email, String firstName, String lastName) throws Exception {
+        RegisterRequest request = RegisterRequest.builder()
+                .firstName(firstName)
+                .lastName(lastName)
+                .email(email)
+                .password("SecurePass123!")
+                .build();
+
+        MvcResult result = mockMvc.perform(post("/api/v1/auth/register")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isCreated())
+                .andReturn();
+
+        return objectMapper.readTree(result.getResponse().getContentAsString()).get("accessToken").asText();
     }
 
     private String createExpiredToken(UUID userId, String email) {

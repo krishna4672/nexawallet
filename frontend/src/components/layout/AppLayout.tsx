@@ -26,7 +26,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ showSidebar = true }) => {
               {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
               <span>{mobileMenuOpen ? 'Close Menu' : 'Platform Menu'}</span>
             </button>
-            <span className="text-xs font-mono text-nexa-teal-400 font-medium">Phase 1 Foundation</span>
+            <span className="text-xs font-mono text-nexa-teal-400 font-medium">NexaWallet</span>
           </div>
         )}
 

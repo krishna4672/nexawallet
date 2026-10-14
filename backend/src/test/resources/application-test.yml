@@ -14,8 +14,63 @@ spring:
   flyway:
     enabled: false
 
+  kafka:
+    bootstrap-servers: localhost:19999
+    admin:
+      fail-fast: false
+      properties:
+        request.timeout.ms: 1000
+        default.api.timeout.ms: 1000
+        retries: 0
+        reconnect.backoff.max.ms: 100
+
+  # Phase 5: no real broker in the default test profile either — see nexa.ratelimit.enabled below.
+  # A deliberately unreachable host keeps Lettuce's lazy connection from ever succeeding by accident.
+  data:
+    redis:
+      host: 127.0.0.1
+      port: 19998
+      timeout: 300
+      connect-timeout: 300
+
+  # Phase 6: same deliberately-unreachable-host pattern as Redis/Kafka above. ServicePointIndexInitializer
+  # and the search service both tolerate this (short timeout, caught and logged / surfaced as a
+  # controlled 503) rather than failing context startup or any unrelated test.
+  elasticsearch:
+    uris: http://127.0.0.1:19997
+    connection-timeout: 300
+    socket-timeout: 300
+
+management:
+  health:
+    redis:
+      enabled: false
+    elasticsearch:
+      enabled: false
+
 server:
   port: -1
+
+# Phase 4: no real broker in the default test profile — the scheduled publisher and the
+# @KafkaListener consumer are both switched off so H2-backed unit/integration tests never
+# attempt real network I/O. Dedicated Testcontainers-backed Kafka tests override these two
+# properties (and spring.kafka.bootstrap-servers) via @DynamicPropertySource.
+nexa:
+  outbox:
+    publisher:
+      enabled: false
+  kafka:
+    consumer:
+      auto-startup: false
+
+  # Phase 5: disabled by default so every existing H2-backed @SpringBootTest (auth, wallet, transfer,
+  # outbox) keeps passing without a live Redis server. Dedicated rate-limiter tests re-enable this
+  # (plus spring.data.redis.*) via @DynamicPropertySource against a real or Testcontainers Redis.
+  # The user-profile cache is unaffected: RedisCacheConfig.java supplies an in-process
+  # ConcurrentMapCacheManager for the "test" profile specifically so cache-hit/miss behavior can
+  # still be exercised deterministically without any Redis server at all.
+  ratelimit:
+    enabled: false
 
 logging:
   level:

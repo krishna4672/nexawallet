@@ -10,6 +10,7 @@ import com.nexawallet.platform.modules.ledger.entity.LedgerAccountEntity;
 import com.nexawallet.platform.modules.ledger.entity.LedgerAccountType;
 import com.nexawallet.platform.modules.ledger.repository.LedgerAccountRepository;
 import com.nexawallet.platform.modules.ledger.repository.LedgerEntryRepository;
+import com.nexawallet.platform.modules.outbox.service.OutboxEventWriter;
 import com.nexawallet.platform.modules.transfer.entity.IdempotencyKeyEntity;
 import com.nexawallet.platform.modules.transfer.entity.IdempotencyStatus;
 import com.nexawallet.platform.modules.transfer.entity.TransactionEntity;
@@ -69,6 +70,7 @@ class TransferServiceImplTest {
 
     // WalletServiceImpl is a real spy so we can test toTransactionResponse()
     @Mock private WalletServiceImpl walletServiceImpl;
+    @Mock private OutboxEventWriter outboxEventWriter;
 
     @InjectMocks private TransferServiceImpl transferService;
 
@@ -170,6 +172,10 @@ class TransferServiceImplTest {
         IdempotencyKeyEntity finalIdempotencyRecord = captor.getAllValues().get(1);
         assertThat(finalIdempotencyRecord.getStatus()).isEqualTo(IdempotencyStatus.COMPLETED);
         assertThat(finalIdempotencyRecord.getResponsePayload()).isNotBlank();
+
+        // Outbox: a domain event must be recorded for the settled transfer, in-transaction
+        verify(outboxEventWriter, times(1)).record(
+                eq("Transaction"), any(), eq("P2P_TRANSFER_SETTLED"), any());
     }
 
     @Test
@@ -213,6 +219,9 @@ class TransferServiceImplTest {
         // No ledger entries or transaction records should have been persisted
         verify(transactionRepository, never()).save(any());
         verify(ledgerEntryRepository, never()).save(any());
+
+        // No outbox event may be recorded for a transfer that never settled
+        verify(outboxEventWriter, never()).record(any(), any(), any(), any());
     }
 
     // ──────────────────────────────────────────────────────────────────────
